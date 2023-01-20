@@ -50,6 +50,13 @@ export default class ShareDataSet extends Component {
     const dataset = this.getTrivialProducer().getOutputData();
     if (dataset && !dataset.isDeleted()) {
       this.dataAvailable();
+    } else if (this.props.fetchData) {
+      this.props.fetchData().then((response) => {
+        if (response) {
+          this.getTrivialProducer().setInputData(response, 0);
+          this.dataAvailable();
+        }
+      });
     }
   }
 
@@ -126,6 +133,7 @@ export default class ShareDataSet extends Component {
 ShareDataSet.defaultProps = {
   port: 0,
   name: 'shared',
+  fetchData: null,
 };
 
 ShareDataSet.propTypes = {
@@ -143,6 +151,11 @@ ShareDataSet.propTypes = {
    * Unique dataset name to cross reference
    */
   name: PropTypes.string,
+
+  /**
+   * Optional callback function for async loading of input data.
+   */
+  fetchData: PropTypes.func,
 
   children: PropTypes.oneOfType([
     PropTypes.arrayOf(PropTypes.node),
