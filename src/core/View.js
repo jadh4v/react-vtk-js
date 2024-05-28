@@ -427,10 +427,12 @@ export default class View extends Component {
       this.interactor.setInteractorStyle(null);
     }
 
-    this.style.delete();
+    if (this.style) {
+      this.style.delete();
+      this.style = null;
+    }
     this.defaultStyle.delete();
     this.defaultStyle = null;
-    this.style = null;
     this.renderer = null;
     this.selector = null;
     this.orientationWidget = null;
