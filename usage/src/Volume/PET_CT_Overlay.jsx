@@ -3,6 +3,9 @@ import vtkLiteHttpDataAccessHelper from '@kitware/vtk.js/IO/Core/DataAccessHelpe
 import vtkResourceLoader from '@kitware/vtk.js/IO/Core/ResourceLoader';
 import vtkColorMaps from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction/ColorMaps.js';
 import { BlendMode } from '@kitware/vtk.js/Rendering/Core/VolumeMapper/Constants.js';
+// import vtkBoundingBox from '@kitware/vtk.js/Common/DataModel/BoundingBox';
+import vtkMath from '@kitware/vtk.js/Common/Core/Math';
+// import * as glm from 'gl-matrix';
 import { unzipSync } from 'fflate';
 import { useContext, useEffect, useState } from 'react';
 import './PET_CT_Overlay.css';
@@ -18,6 +21,8 @@ import {
   View,
   VolumeRepresentation,
 } from 'react-vtk-js';
+import vtkImageData from '@kitware/vtk.js/Common/DataModel/ImageData';
+import vtkImageReslice from '@kitware/vtk.js/Imaging/Core/ImageReslice';
 
 function Slider(props) {
   const view = useContext(Contexts.ViewContext);
@@ -96,9 +101,143 @@ function DropDown(props) {
   );
 }
 
+/**
+ * Compare grids of images and return true if the img2 have slice planes overlapping with img1.
+ * Test includes the fact that img2 slices are within the slice bounds of img1.
+ * We only test for planes k = 0 and 1, since vtkImageData represents a regular grid.
+ * @param {vtkImageData} img1 
+ * @param {*} img2 
+ */
+function hasOverlappingPlanes(img1, img2, tolerance = vtkMath.EPSILON) {
+  if (!img1 || !img2) {
+    return false;
+  }
+
+  const e = img2.getExtent();
+
+  // get planes k= 0,1 corner points for image2
+  const planesIJK = [
+    [e[0], e[2], e[4]],
+    [e[1], e[2], e[4]],
+    [e[0], e[3], e[4]],
+    [e[1], e[3], e[4]],
+    [e[0], e[2], e[4] + 1],
+    [e[1], e[2], e[4] + 1],
+    [e[0], e[3], e[4] + 1],
+    [e[1], e[3], e[4] + 1],
+  ];
+
+  const planesPts = planesIJK.map((p) => img2.indexToWorld(p));
+
+  // It is easier to test slice bounds in index space.
+  // We first calculate the corner points in world coordinates for img2 slice0 and slice1,
+  // and then convert these points back into index space of img1 to compare ijk values.
+  const indexBounds = img1.getExtent();
+  const withinSliceBounds = (worldPoint, sliceIdx) => {
+    const x = img1.worldToIndex(worldPoint);
+    return (
+      x[0] >= indexBounds[0] && x[0] <= indexBounds[1] &&
+      x[1] >= indexBounds[2] && x[1] <= indexBounds[3] &&
+      x[2] > sliceIdx - tolerance && x[2] < sliceIdx + tolerance
+    )
+  };
+
+  let onPlane = true;
+  for(let i = 0; i < planesPts.length; ++i) {
+    onPlane = onPlane && withinSliceBounds(planesPts[i], i < 4 ? 0 : 1);
+  }
+
+  return onPlane;
+}
+
+const loadLocalData = async function (event) {
+  event.preventDefault();
+  console.log('Loading itk module...');
+  window.setStatusText('Loading itk module...');
+  if (!window.itk) {
+    await vtkResourceLoader.loadScript(
+      'https://cdn.jsdelivr.net/npm/itk-wasm@1.0.0-b.8/dist/umd/itk-wasm.js'
+    );
+  }
+  const files = event.target.files;
+  if (files.length === 1) {
+    const fileReader = new FileReader();
+    fileReader.onload = async function onLoad(e) {
+      const zipFileDataArray = new Uint8Array(fileReader.result);
+      const decompressedFiles = unzipSync(zipFileDataArray);
+      const ctDCMFiles = [];
+      const ptDCMFiles = [];
+      const PTRe = /PT/;
+      const CTRe = /CT/;
+      Object.keys(decompressedFiles).forEach((relativePath) => {
+        if (relativePath.endsWith('.dcm')) {
+          if (PTRe.test(relativePath)) {
+            ptDCMFiles.push(decompressedFiles[relativePath].buffer);
+          } else if (CTRe.test(relativePath)) {
+            ctDCMFiles.push(decompressedFiles[relativePath].buffer);
+          }
+        }
+      });
+
+      if (ptDCMFiles.length === 0 || ctDCMFiles.length === 0) {
+        const msg = 'Expected two directories in the zip file: "PT" and "CT"';
+        console.error(msg);
+        window.alert(msg);
+        return;
+      }
+
+      let ctImageData = null;
+      let ptImageData = null;
+      if (window.itk) {
+        const { image: ctitkImage, webWorkerPool: ctWebWorkers } =
+          await window.itk.readImageDICOMArrayBufferSeries(ctDCMFiles);
+        ctWebWorkers.terminateWorkers();
+        ctImageData = vtkITKHelper.convertItkToVtkImage(ctitkImage);
+        const { image: ptitkImage, webWorkerPool: ptWebWorkers } =
+          await window.itk.readImageDICOMArrayBufferSeries(ptDCMFiles);
+        ptWebWorkers.terminateWorkers();
+        ptImageData = vtkITKHelper.convertItkToVtkImage(ptitkImage);
+      }
+      window.setMaxKSlice(ctImageData.getDimensions()[2] - 1);
+      window.setMaxJSlice(ptImageData.getDimensions()[1] - 1);
+      const range = ptImageData?.getPointData()?.getScalars()?.getRange();
+      window.setPTColorWindow(range[1] - range[0]);
+      window.setPTColorLevel((range[1] + range[0]) * 0.5);
+      window.setStatusText('');
+      loader.hidden = 'hidden';
+      fileInput.hidden = 'hidden';
+      const overlappingPlanes =
+        hasOverlappingPlanes(ctImageData, ptImageData, 1e-3) ||
+        hasOverlappingPlanes(ptImageData, ctImageData, 1e-3)
+      console.log('local data overlappingPlanes = ', overlappingPlanes);
+      const reslicer = vtkImageReslice.newInstance();
+      if (!overlappingPlanes) {
+        // Resample the image with background series grid:
+        reslicer.setInputData(ptImageData);
+        reslicer.setOutputDimensionality(3);
+        reslicer.setOutputExtent(ctImageData.getExtent());
+        //reslicer.setOutputDimension(ctImageData.getDimensions());
+        reslicer.setOutputSpacing(ctImageData.getSpacing());
+        reslicer.setOutputDirection(ctImageData.getDirection());
+        reslicer.setOutputOrigin(ctImageData.getOrigin());
+        // reslicer.setOutputScalarType('float32');
+        reslicer.setTransformInputSampling(false);
+        reslicer.update();
+        window.ptData = reslicer.getOutputData();
+      } else {
+        window.ptData = ptImageData;
+      }
+      window.ctData = ctImageData;
+      return [ctImageData, ptImageData];
+    };
+
+    fileReader.readAsArrayBuffer(files[0]);
+  }
+};
+
 const loadData = async () => {
   console.log('Loading itk module...');
-  loadData.setStatusText('Loading itk module...');
+  window.setStatusText('Loading itk module...');
   if (!window.itk) {
     await vtkResourceLoader.loadScript(
       'https://cdn.jsdelivr.net/npm/itk-wasm@1.0.0-b.8/dist/umd/itk-wasm.js'
@@ -106,13 +245,13 @@ const loadData = async () => {
   }
 
   console.log('Fetching/downloading the input file, please wait...');
-  loadData.setStatusText('Loading data, please wait...');
+  window.setStatusText('Loading data, please wait...');
   const zipFileData = await vtkLiteHttpDataAccessHelper.fetchBinary(
     'https://data.kitware.com/api/v1/folder/661ad10a5165b19d36c87220/download'
   );
 
   console.log('Fetching/downloading input file done!');
-  loadData.setStatusText('Download complete!');
+  window.setStatusText('Download complete!');
 
   const zipFileDataArray = new Uint8Array(zipFileData);
   const decompressedFiles = unzipSync(zipFileDataArray);
@@ -142,13 +281,19 @@ const loadData = async () => {
     ptWebWorkers.terminateWorkers();
     ptImageData = vtkITKHelper.convertItkToVtkImage(ptitkImage);
   }
-  loadData.setMaxKSlice(ctImageData.getDimensions()[2] - 1);
-  loadData.setMaxJSlice(ptImageData.getDimensions()[1] - 1);
+  window.setMaxKSlice(ctImageData.getDimensions()[2] - 1);
+  window.setMaxJSlice(ptImageData.getDimensions()[1] - 1);
   const range = ptImageData?.getPointData()?.getScalars()?.getRange();
-  loadData.setPTColorWindow(range[1] - range[0]);
-  loadData.setPTColorLevel((range[1] + range[0]) * 0.5);
-  loadData.setStatusText('');
+  window.setPTColorWindow(range[1] - range[0]);
+  window.setPTColorLevel((range[1] + range[0]) * 0.5);
+  window.setStatusText('');
   loader.hidden = 'hidden';
+  const overlappingPlanes =
+    hasOverlappingPlanes(ctImageData, ptImageData, 1e-3) ||
+    hasOverlappingPlanes(ptImageData, ctImageData, 1e-3)
+  console.log('example data overlappingPlanes = ', overlappingPlanes);
+  window.ctData = ctImageData;
+  window.ptData = ptImageData;
   return [ctImageData, ptImageData];
 };
 
@@ -165,24 +310,26 @@ function Example(props) {
   const [opacity, setOpacity] = useState(0.4);
   const [maxKSlice, setMaxKSlice] = useState(310);
   const [maxJSlice, setMaxJSlice] = useState(110);
-  loadData.setMaxKSlice = setMaxKSlice;
-  loadData.setMaxJSlice = setMaxJSlice;
-  loadData.setStatusText = setStatusText;
-  loadData.setPTColorWindow = setPTColorWindow;
-  loadData.setPTColorLevel = setPTColorLevel;
+  window.setMaxKSlice = setMaxKSlice;
+  window.setMaxJSlice = setMaxJSlice;
+  window.setStatusText = setStatusText;
+  window.setPTColorWindow = setPTColorWindow;
+  window.setPTColorLevel = setPTColorLevel;
 
   useEffect(() => {
-    loadData().then(([ctData, ptData]) => {
-      window.ctData = ctData;
-      window.ptData = ptData;
-      setKSlice(155);
-      setJSlice(64);
-      setCTJSlice(256);
-    });
-  }, []);
+    if (window.ctData && window.ptData) {
+      const ptDim = window.ptData.getDimensions();
+      setKSlice(Math.floor(ptDim[2]/2));
+      setJSlice(Math.floor(ptDim[1]/2));
+      const ctDim = window.ctData.getDimensions();
+      setCTJSlice(Math.floor(ctDim[1]/2));
+    }
+  }, [window.ctData, window.ptData]);
 
   return (
     <MultiViewRoot>
+      <input id='fileInput' type='file' text='load local data' className='file' accept='.zip' onChange={loadLocalData}/>
+      <input id='exampleInput' type='button' value='example' accept='.zip' onClick={loadData}/>
       <ShareDataSetRoot>
         <RegisterDataSet id='ctData'>
           <Dataset dataset={window.ctData} />
