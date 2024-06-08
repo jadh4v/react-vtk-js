@@ -3,9 +3,7 @@ import vtkLiteHttpDataAccessHelper from '@kitware/vtk.js/IO/Core/DataAccessHelpe
 import vtkResourceLoader from '@kitware/vtk.js/IO/Core/ResourceLoader';
 import vtkColorMaps from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction/ColorMaps.js';
 import { BlendMode } from '@kitware/vtk.js/Rendering/Core/VolumeMapper/Constants.js';
-// import vtkBoundingBox from '@kitware/vtk.js/Common/DataModel/BoundingBox';
 import vtkMath from '@kitware/vtk.js/Common/Core/Math';
-// import * as glm from 'gl-matrix';
 import { unzipSync } from 'fflate';
 import { useContext, useEffect, useState } from 'react';
 import './PET_CT_Overlay.css';
@@ -23,14 +21,16 @@ import {
 } from 'react-vtk-js';
 import vtkImageData from '@kitware/vtk.js/Common/DataModel/ImageData';
 import vtkImageReslice from '@kitware/vtk.js/Imaging/Core/ImageReslice';
+import vtkImageMapper from '@kitware/vtk.js/Rendering/Core/ImageMapper.js';
 
 function Slider(props) {
   const view = useContext(Contexts.ViewContext);
   const onChange = (e) => {
     const value = Number(e.currentTarget.value);
     props.setValue(value);
-    if (props.setCTValue) {
-      props.setCTValue(value * 4);
+    if (props.resliced === true) {
+      // window.ctData.indexToWorld([0, 1, 1])
+      props.setPTValue(value)
     }
     setTimeout(view?.renderView, 0);
   };
@@ -198,36 +198,37 @@ const loadLocalData = async function (event) {
         ptWebWorkers.terminateWorkers();
         ptImageData = vtkITKHelper.convertItkToVtkImage(ptitkImage);
       }
-      window.setMaxKSlice(ctImageData.getDimensions()[2] - 1);
-      window.setMaxJSlice(ptImageData.getDimensions()[1] - 1);
-      const range = ptImageData?.getPointData()?.getScalars()?.getRange();
-      window.setPTColorWindow(range[1] - range[0]);
-      window.setPTColorLevel((range[1] + range[0]) * 0.5);
-      window.setStatusText('');
       loader.hidden = 'hidden';
       fileInput.hidden = 'hidden';
       const overlappingPlanes =
         hasOverlappingPlanes(ctImageData, ptImageData, 1e-3) ||
         hasOverlappingPlanes(ptImageData, ctImageData, 1e-3)
       console.log('local data overlappingPlanes = ', overlappingPlanes);
-      const reslicer = vtkImageReslice.newInstance();
+
       if (!overlappingPlanes) {
         // Resample the image with background series grid:
+        const reslicer = vtkImageReslice.newInstance();
         reslicer.setInputData(ptImageData);
         reslicer.setOutputDimensionality(3);
         reslicer.setOutputExtent(ctImageData.getExtent());
-        //reslicer.setOutputDimension(ctImageData.getDimensions());
         reslicer.setOutputSpacing(ctImageData.getSpacing());
         reslicer.setOutputDirection(ctImageData.getDirection());
         reslicer.setOutputOrigin(ctImageData.getOrigin());
-        // reslicer.setOutputScalarType('float32');
+        // reslicer.setOutputScalarType('Float32Array');
         reslicer.setTransformInputSampling(false);
-        reslicer.update();
-        window.ptData = reslicer.getOutputData();
-      } else {
-        window.ptData = ptImageData;
+        // reslicer.update();
+        ptImageData = reslicer.getOutputData();
+        window.setResliced(true);
       }
+      window.ptData = ptImageData;
       window.ctData = ctImageData;
+      window.setMaxKSlice(ctImageData.getDimensions()[2] - 1);
+      window.setMaxJSlice(ctImageData.getDimensions()[1] - 1);
+      const range = ptImageData?.getPointData()?.getScalars()?.getRange();
+      window.setPTColorWindow(range[1] - range[0]);
+      window.setPTColorLevel((range[1] + range[0]) * 0.5);
+      window.setStatusText('');
+
       return [ctImageData, ptImageData];
     };
 
@@ -300,7 +301,7 @@ const loadData = async () => {
 function Example(props) {
   const [statusText, setStatusText] = useState('Loading data, please wait ...');
   const [kSlice, setKSlice] = useState(0);
-  const [jSlice, setJSlice] = useState(0);
+  const [ptjSlice, setJSlice] = useState(0);
   const [ctjSlice, setCTJSlice] = useState(0);
   const [colorWindow, setColorWindow] = useState(2048);
   const [colorLevel, setColorLevel] = useState(0);
@@ -310,11 +311,20 @@ function Example(props) {
   const [opacity, setOpacity] = useState(0.4);
   const [maxKSlice, setMaxKSlice] = useState(310);
   const [maxJSlice, setMaxJSlice] = useState(110);
+  const [resliced, setResliced] = useState(false);
+  const [ptjmapper] = useState(() => vtkImageMapper.newInstance({
+    resolveCoincidentTopology: 'Polygon',
+    resolveCoincidentTopologyPolygonOffsetParameters: {
+      factor: 0,
+      offset: 2,
+    }
+  }));
   window.setMaxKSlice = setMaxKSlice;
   window.setMaxJSlice = setMaxJSlice;
   window.setStatusText = setStatusText;
   window.setPTColorWindow = setPTColorWindow;
   window.setPTColorLevel = setPTColorLevel;
+  window.setResliced = setResliced;
 
   useEffect(() => {
     if (window.ctData && window.ptData) {
@@ -325,6 +335,15 @@ function Example(props) {
       setCTJSlice(Math.floor(ctDim[1]/2));
     }
   }, [window.ctData, window.ptData]);
+
+  useEffect(() => {
+    if (window.ctData && window.ptData && !resliced) {
+      const ct_ijk = [0, ctjSlice, 0];
+      const ct_p = window.ctData.indexToWorld(ct_ijk, []);
+      const pt_jslice = Math.floor(ptjmapper.getSliceAtPosition(ct_p));
+      setJSlice(pt_jslice);
+    }
+  }, [window.ctData, window.ptData, resliced, ptjmapper, ctjSlice]);
 
   return (
     <MultiViewRoot>
@@ -465,15 +484,17 @@ function Example(props) {
               <Slider
                 label='Slice'
                 max={maxJSlice}
-                value={jSlice}
-                setValue={setJSlice}
-                setCTValue={setCTJSlice}
+                value={ctjSlice}
+                setValue={setCTJSlice}
+                setPTValue={setJSlice}
+                resliced={resliced}
                 orient='vertical'
                 style={{ top: '50%', left: '5%' }}
               />
               <SliceRepresentation
-                id='pt'
-                jSlice={jSlice}
+                jSlice={ptjSlice}
+                mapperInstance={ptjmapper}
+                /*
                 mapper={{
                   resolveCoincidentTopology: 'Polygon',
                   resolveCoincidentTopologyPolygonOffsetParameters: {
@@ -481,6 +502,7 @@ function Example(props) {
                     offset: 2,
                   },
                 }}
+                */
                 property={{
                   opacity,
                   colorWindow: ptcolorWindow,
