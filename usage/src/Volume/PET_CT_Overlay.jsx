@@ -21,6 +21,7 @@ import {
 } from 'react-vtk-js';
 import vtkImageReslice from '@kitware/vtk.js/Imaging/Core/ImageReslice';
 import { InterpolationMode } from '@kitware/vtk.js/Imaging/Core/AbstractImageInterpolator/Constants';
+import vtkImageMapper from '@kitware/vtk.js/Rendering/Core/ImageMapper';
 
 function Slider(props) {
   const view = useContext(Contexts.ViewContext);
@@ -271,6 +272,10 @@ function Example(props) {
   const [maxKSlice, setMaxKSlice] = useState(310);
   const [maxJSlice, setMaxJSlice] = useState(110);
   const [resliced, setResliced] = useState(false);
+  const [mapper1] = useState(() => vtkImageMapper.newInstance());
+  const [mapper2] = useState(() => vtkImageMapper.newInstance());
+  //const [mapper3] = useState(() => vtkImageMapper.newInstance());
+  //const [mapper4] = useState(() => vtkImageMapper.newInstance());
   window.setMaxKSlice = setMaxKSlice;
   window.setMaxJSlice = setMaxJSlice;
   window.setStatusText = setStatusText;
@@ -287,6 +292,18 @@ function Example(props) {
       setCTJSlice(Math.floor(ctDim[1]/2));
     }
   }, [window.ctData, window.ptData]);
+
+  /*
+  useEffect(() =>
+    [mapper1, mapper2].forEach((m) => {
+    if (m) {
+      m.setResolveCoincidentTopology(true);
+      m.setResolveCoincidentTopologyToPolygonOffset();
+      m.setResolveCoincidentTopologyPolygonOffsetParameters(0, 0);
+      console.log('m = ', m.getState());
+    }
+  }), [mapper1, mapper2]);
+  */
 
   return (
     <MultiViewRoot>
@@ -378,13 +395,15 @@ function Example(props) {
               />
               <SliceRepresentation
                 kSlice={kSlice}
+                mapperInstance={mapper1}
+                /*
                 mapper={{
                   resolveCoincidentTopology: 'Polygon',
                   resolveCoincidentTopologyPolygonOffsetParameters: {
                     factor: 0,
                     offset: 2,
                   },
-                }}
+                }}*/
                 property={{
                   opacity,
                   colorWindow: ptcolorWindow,
@@ -436,13 +455,15 @@ function Example(props) {
               />
               <SliceRepresentation
                 jSlice={ptjSlice}
+                mapperInstance={mapper2}
+                /*
                 mapper={{
                   resolveCoincidentTopology: 'Polygon',
                   resolveCoincidentTopologyPolygonOffsetParameters: {
                     factor: 0,
                     offset: 2,
                   },
-                }}
+                }}*/
                 property={{
                   opacity,
                   colorWindow: ptcolorWindow,
