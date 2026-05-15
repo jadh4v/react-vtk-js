@@ -36,7 +36,19 @@ export default forwardRef(function OpenGLRenderWindow(
 
   const [viewRef, getRWView] = useGetterRef(() => {
     const view = vtkOpenGLRenderWindow.newInstance();
-    deletionRegistry.register(view, () => view.delete());
+    deletionRegistry.register(view, () => {
+      // Explicitly release the WebGL context back to the GPU before deleting
+      // the VTK object. Without this, Chrome's per-process limit of ~16
+      // WebGL contexts is exhausted across case transitions, causing active
+      // viewports to go blank.
+      const canvas = view.getCanvas?.() as HTMLCanvasElement | undefined;
+      if (canvas) {
+        const gl: WebGLRenderingContext | WebGL2RenderingContext | null =
+          canvas.getContext('webgl2') ?? canvas.getContext('webgl');
+        gl?.getExtension('WEBGL_lose_context')?.loseContext();
+      }
+      view.delete();
+    });
     return view;
   });
 
