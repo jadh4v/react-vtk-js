@@ -3,19 +3,25 @@ on:
   push:
     branches:
       - master
-      - beta
 
 jobs:
   publish:
     name: Publish
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write # to be able to publish a GitHub release
+      issues: write # to be able to comment on released issues
+      pull-requests: write # to be able to comment on released pull requests
+      id-token: write # to enable use of OIDC for npm provenance
+    environment:
+      name: npm
     steps:
       - name: Checkout
         uses: actions/checkout@v2
         with:
           fetch-depth: 0
       - name: Setup node
-        uses: actions/setup-node@v1
+        uses: actions/setup-node@v4
         with:
           node-version: 24
       - name: Install dependencies
@@ -26,8 +32,9 @@ jobs:
         run: npm run test
       - name: Release
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # No need to set NPM_TOKEN because of OIDC
+          NPM_CONFIG_PROVENANCE: true
         run: |
           git config --global user.name "Github Actions"
           git config --global user.email "sebastien.jourdain@kitware.com"
