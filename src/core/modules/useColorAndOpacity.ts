@@ -1,9 +1,10 @@
 import vtkPiecewiseFunction from '@kitware/vtk.js/Common/DataModel/PiecewiseFunction';
+import type { vtkObject } from '@kitware/vtk.js/interfaces';
 import vtkColorTransferFunction from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction';
 import vtkProp3D from '@kitware/vtk.js/Rendering/Core/Prop3D';
 import { useEffect } from 'react';
 
-interface PropertyWithColorAndOpacity {
+interface PropertyWithColorAndOpacity extends vtkObject {
   setRGBTransferFunction(
     index: number,
     fn: vtkColorTransferFunction | null
@@ -13,7 +14,7 @@ interface PropertyWithColorAndOpacity {
   getScalarOpacity(index?: number): vtkPiecewiseFunction | null;
 }
 
-interface ActorWithColorAndOpacity<E> extends vtkProp3D {
+interface ActorWithColorAndOpacity<E extends vtkObject> extends vtkProp3D {
   getProperty(): E;
 }
 
