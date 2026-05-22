@@ -113,7 +113,7 @@ const ParentedView = forwardRef(function ParentedView(
     () => {
       switchTarget();
     },
-    { capture: true }
+    { capture: true, passive: true }
   );
 
   useEventListener(
